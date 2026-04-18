@@ -5,8 +5,8 @@ A GDB-style interactive debugger for transformer internals.
 ## Problem
 
 Modern AI systems run on transformer models whose internal reasoning is
-invisible. When these systems fail in unexpected ways — confidently
-producing a wrong answer on an input nobody anticipated — engineers have no
+invisible. When these systems fail in unexpected ways, confidently
+producing a wrong answer on an input nobody anticipated, engineers have no
 system to look inside and ask why. Evals and logs tell you that the model
 failed, but nothing more. They're black-box unit tests. They can't surface
 root causes.
@@ -41,7 +41,7 @@ different prompt's forward pass to test sufficiency. Run a sweep across all
 heads in a layer (or range of layers) to find the most critical components
 automatically.
 
-**Comparison.** Run two prompts side-by-side with a shared layer axis.
+**Comparison.** Run two prompts side-by-side with a shared layer list.
 KL-divergence bars show where in the network the prompts start disagreeing.
 Attention patterns can be diffed directly to surface heads doing
 input-specific work.
@@ -63,20 +63,16 @@ Model: `gpt2-medium` via TransformerLens (24 layers, 16 heads per layer,
 
 - Single model loaded once at server startup; every request is a forward
   pass through the same in-memory `HookedTransformer`.
-- `POST /trace`: one prompt → a full `ForwardTrace` with the residual stream
+- `POST /trace`: one prompt -> a full `ForwardTrace` with the residual stream
   at every layer+token, attention patterns per head, per-layer/per-position
   logit-lens top-k, and the final model top-k. Response keyed-cached on
   `(prompt, interventions)`.
-- `POST /compare`: two equal-length prompts → per-layer symmetric KL and
+- `POST /compare`: two equal-length prompts -> per-layer symmetric KL and
   cosine distance at the final token position.
 - `POST /sweep`: baseline + a (layer, head) grid of single-head ablations
   over a chosen scope, ranked by effect on a tracked target token. Each
   ablation populates the trace cache as a side effect, so clicking a sweep
   result opens the full ablated trace instantly.
-- Interventions are Pydantic-discriminated-union types
-  (`zero_head` / `zero_mlp` / `patch_head`). Each maps to a TransformerLens
-  forward hook registered via `model.add_hook(...)` and always torn down in
-  a `try/finally` — stale hooks can't leak between requests.
 - Patching runs the source prompt's forward pass up-front, extracts
   `hook_z` for the requested (layer, head), and injects that slice into the
   target's forward pass at the same site. Source/target must tokenize to
@@ -84,20 +80,15 @@ Model: `gpt2-medium` via TransformerLens (24 layers, 16 heads per layer,
 
 **Frontend** — Vite + React 19 + TypeScript 6 + Tailwind v4 + Nivo 0.99.
 
-- Dark, monospace, IDA/Ghidra-flavored UI. Information density over
-  whitespace; one consistent accent color.
 - State shape: per-trace view state (selected token, selected layer, detail
   tab), per-trace sweep state, app-level compare state. Trace IDs are
   deterministic hashes of `(prompt, sorted-interventions)` so repeating an
   intervention just switches tabs instead of re-fetching.
-- Heatmaps and bar charts use memoized data. Keystrokes in the prompt input
-  are isolated to the TopBar component so they don't re-render the 17+
-  Nivo charts that make up the attention view.
 - Compare mode is a split view with two token strips, a KL-by-layer bar
   list, a shared-scale predictions panel, and an attention section with
   A-only / B-only / diff segmented controls. Diff heatmaps use a diverging
-  cyan↔amber scale.
-- Every intervention auto-activates compare mode (base trace ↔ intervened
+  cyan<->amber scale.
+- Every intervention auto-activates compare mode (base trace <-> intervened
   trace) so the user never has to set up the comparison manually. Tab
   labels surface the effect magnitude (`[−L15.H7 ↓.13]` / `[L15.H7←Italy ↑.03]`)
   color-coded by intervention type.
@@ -109,7 +100,7 @@ Model: `gpt2-medium` via TransformerLens (24 layers, 16 heads per layer,
 - **Python 3.11+** and [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
 - **Node 18+** and `npm` (Node 22 is what the project was developed on).
 - **Optional**: NVIDIA GPU with a driver supporting CUDA 12.x. The app runs
-  on CPU just fine — see the CPU-only install below.
+  on CPU just fine, see the CPU-only install below.
 
 ### Setup
 
@@ -255,15 +246,6 @@ Representative findings on the canonical France/Italy prompts:
 - **Most-effective single-head patch**: `L16.H2` surfaces Rome to ~0.026.
   Single-head patching is too weak to fully flip France → Rome; you'd need
   multi-head or MLP patches for a clean demo flip.
-
-## Re-theming
-
-Colors are centralized in two places. Edit both and the UI re-skins
-without touching components:
-
-- `frontend/src/theme.ts` — TypeScript constants (used by Nivo + inline).
-- `frontend/src/index.css` — `@theme { --color-accent: ...; ... }` block
-  (used by Tailwind utilities).
 
 ## Stack
 
