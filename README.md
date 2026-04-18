@@ -256,21 +256,6 @@ Representative findings on the canonical France/Italy prompts:
   Single-head patching is too weak to fully flip France → Rome; you'd need
   multi-head or MLP patches for a clean demo flip.
 
-## Honest notes
-
-- Single-head patching is a weak intervention for factual recall in
-  gpt2-medium. Expect subtle magnitude changes, not dramatic flips. The UI
-  surfaces magnitudes so "this did basically nothing" is always visible.
-- The logit-lens sparkline looks up the final-layer top-1 token in each
-  earlier layer's top-5 — if it's absent we show `0`. An honest
-  under-approximation at early layers; a full fix would need the backend
-  to return the target token's probability at every layer.
-- Frontend typing is isolated to the top-bar's input so heatmaps don't
-  re-render on every keystroke.
-- Hooks are always cleaned up in `try/finally`; the `/trace` endpoint
-  with no interventions is byte-identical before and after any
-  intervention request.
-
 ## Re-theming
 
 Colors are centralized in two places. Edit both and the UI re-skins
