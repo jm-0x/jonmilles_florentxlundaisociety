@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+/* Custom Tailwind color utilities. Mirror the constants in src/theme.ts.
+ * Generates bg-accent, text-accent, border-accent, caret-accent, bg-ablate,
+ * bg-patch, bg-data, etc. — plus their /NN opacity variants.
+ * To re-theme: edit these values and the matching exports in theme.ts. */
+@theme {
+  --color-accent: #fbbf24;
+  --color-accent-hover: #fcd34d;
+  --color-accent-muted: #92400e;
+  --color-data: #fbbf24;
+  --color-data-hover: #fcd34d;
+  --color-data-muted: #92400e;
+  --color-ablate: #ef4444;
+  --color-patch: #22d3ee;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  background: #0a0a0a;
+  color: #f5f5f5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+input,
+button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: #0a0a0a;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #262626;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #404040;
+}
