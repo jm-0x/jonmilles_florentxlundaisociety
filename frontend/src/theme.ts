@@ -28,8 +28,9 @@ export const DIFF = {
 
 // Intervention tab left-stripes.
 export const INTERVENTION = {
-  ablate: "#ef4444", // red-500 (necessity probe)
-  patch: "#22d3ee", // cyan (sufficiency probe)
+  ablate: "#ef4444", // red-500 — necessary (ablating hurts)
+  suppress: "#10b981", // emerald-500 — suppressive (ablating helps)
+  patch: "#22d3ee", // cyan — sufficient (patching)
 };
 
 export const BG = {
