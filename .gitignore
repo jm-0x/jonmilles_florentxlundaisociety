@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.python-version
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+# HuggingFace / TransformerLens model cache if it lands locally
+.cache/
