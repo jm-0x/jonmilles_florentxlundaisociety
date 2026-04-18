@@ -74,3 +74,42 @@ export type TraceMetadata = {
   baseTraceId: string | null; // trace this one was derived from via intervention
   effect?: TraceEffect;
 };
+
+export type SweepScope = "current_layer" | "layer_range" | "all_layers";
+
+export type SweepRequestBody = {
+  prompt: string;
+  scope: SweepScope;
+  layer?: number;
+  layer_start?: number;
+  layer_end?: number;
+  target_token?: string;
+  base_interventions?: Intervention[];
+};
+
+export type SweepResultItem = {
+  layer: number;
+  head: number;
+  baseline_prob: number;
+  ablated_prob: number;
+  effect: number;
+};
+
+export type SweepResponse = {
+  prompt: string;
+  target_token: string;
+  target_token_baseline_prob: number;
+  n_layers_swept: number;
+  n_heads_per_layer: number;
+  total_ablations: number;
+  results: SweepResultItem[];
+};
+
+export type SweepState = {
+  isRunning: boolean;
+  progress: { current: number; total: number } | null;
+  results: SweepResultItem[] | null;
+  targetToken: string | null;
+  baselineProb: number | null;
+  scopeUsed: SweepScope;
+};

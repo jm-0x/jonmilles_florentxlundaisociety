@@ -7,6 +7,9 @@ import type {
   DetailTab,
   Intervention,
   PatchHeadIntervention,
+  SweepResultItem,
+  SweepScope,
+  SweepState,
   Trace,
   TraceMetadata,
   TraceViewState,
@@ -17,6 +20,7 @@ import {
   fetchComparison,
   fetchTrace,
   getCachedComparison,
+  runSweep,
 } from "./api";
 import { traceId } from "./interventions";
 import type { SourceTrace } from "./components/AttentionTab";
@@ -52,6 +56,7 @@ function App() {
   const [traceMetadata, setTraceMetadata] = useState<
     Record<string, TraceMetadata>
   >({});
+  const [sweepState, setSweepState] = useState<Record<string, SweepState>>({});
   const [tabOrder, setTabOrder] = useState<string[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
 
@@ -226,6 +231,11 @@ function App() {
       delete next[id];
       return next;
     });
+    setSweepState((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setTabOrder(nextOrder);
 
     if (activeTabId === id) {
@@ -257,6 +267,82 @@ function App() {
   function onAddTab() {
     setClearSignal((n) => n + 1);
     queueMicrotask(() => promptInputRef.current?.focus());
+  }
+
+  async function handleRunSweep(
+    traceId: string,
+    scope: SweepScope,
+    currentBlockIdx: number | null
+  ) {
+    const trace = traces[traceId];
+    if (!trace) return;
+
+    setSweepState((prev) => ({
+      ...prev,
+      [traceId]: {
+        isRunning: true,
+        progress: null,
+        results: null,
+        targetToken: null,
+        baselineProb: null,
+        scopeUsed: scope,
+      },
+    }));
+
+    try {
+      const body = {
+        prompt: trace.prompt,
+        scope,
+        ...(scope === "current_layer" && currentBlockIdx !== null
+          ? { layer: currentBlockIdx }
+          : {}),
+        ...(scope === "layer_range" ? { layer_start: 10, layer_end: 20 } : {}),
+        base_interventions: trace.interventions_applied ?? [],
+      };
+      const resp = await runSweep(body);
+      setSweepState((prev) => ({
+        ...prev,
+        [traceId]: {
+          isRunning: false,
+          progress: null,
+          results: resp.results,
+          targetToken: resp.target_token,
+          baselineProb: resp.target_token_baseline_prob,
+          scopeUsed: scope,
+        },
+      }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setSweepState((prev) => ({
+        ...prev,
+        [traceId]: {
+          isRunning: false,
+          progress: null,
+          results: null,
+          targetToken: null,
+          baselineProb: null,
+          scopeUsed: scope,
+        },
+      }));
+    }
+  }
+
+  function handleSweepResultClick(traceId: string, item: SweepResultItem) {
+    // Reuse the ablation flow — backend cache is already populated from the
+    // sweep, so this opens the tab instantly.
+    void ablateHead(traceId, {
+      type: "zero_head",
+      layer: item.layer,
+      head: item.head,
+    });
+  }
+
+  function handleDismissSweep(traceId: string) {
+    setSweepState((prev) => {
+      const next = { ...prev };
+      delete next[traceId];
+      return next;
+    });
   }
 
   function onCompareToggle() {
@@ -496,6 +582,24 @@ function App() {
                   : undefined
               }
               sourceTraces={sourceTracesActive}
+              sweepState={
+                activeTabId ? sweepState[activeTabId] : undefined
+              }
+              canSweep={!!activeTabId && !compareMode}
+              onRunSweep={
+                activeTabId
+                  ? (scope, blockIdx) =>
+                      void handleRunSweep(activeTabId, scope, blockIdx)
+                  : undefined
+              }
+              onSweepResultClick={
+                activeTabId
+                  ? (item) => handleSweepResultClick(activeTabId, item)
+                  : undefined
+              }
+              onDismissSweep={
+                activeTabId ? () => handleDismissSweep(activeTabId) : undefined
+              }
             />
           </div>
           {loading && (

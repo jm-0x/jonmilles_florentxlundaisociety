@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -44,6 +44,34 @@ class TraceRequest(BaseModel):
     prompt: str
     top_k: int = 5
     interventions: list[Intervention] = []
+
+
+class SweepRequest(BaseModel):
+    prompt: str
+    scope: Literal["current_layer", "layer_range", "all_layers"]
+    layer: Optional[int] = None
+    layer_start: Optional[int] = None
+    layer_end: Optional[int] = None
+    target_token: Optional[str] = None
+    base_interventions: list[Intervention] = []
+
+
+class SweepResultItem(BaseModel):
+    layer: int
+    head: int
+    baseline_prob: float
+    ablated_prob: float
+    effect: float
+
+
+class SweepResponse(BaseModel):
+    prompt: str
+    target_token: str
+    target_token_baseline_prob: float
+    n_layers_swept: int
+    n_heads_per_layer: int
+    total_ablations: int
+    results: list[SweepResultItem]
 
 
 class CompareRequest(BaseModel):
@@ -280,33 +308,35 @@ def health() -> dict:
     }
 
 
-@app.post("/trace", response_model=TraceResponse)
-def trace_endpoint(req: TraceRequest) -> TraceResponse:
-    cache: dict[str, TraceResponse] = _state["cache"]
-    key = _trace_cache_key(req.prompt, req.interventions)
-    if key in cache:
-        return cache[key]
+def _compute_trace_response(
+    prompt: str,
+    interventions: list,
+    top_k: int,
+    model,
+    cache: dict,
+) -> TraceResponse:
+    """Shared path for /trace and /sweep. Populates cache as a side effect so
+    sweeps make subsequent /trace lookups for the same (prompt, intervention)
+    a cache hit."""
+    key = _trace_cache_key(prompt, interventions)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
 
-    model = _state["model"]
-
-    # Validate length for patch sources and extract their activations clean (no hooks).
-    target_tokens = model.to_tokens(req.prompt)
+    target_tokens = model.to_tokens(prompt)
     target_len = int(target_tokens.shape[1])
-    patch_sources = _prepare_patch_sources(req.interventions, model, target_len)
-
-    hooks = _build_hooks(req.interventions, patch_sources)
+    patch_sources = _prepare_patch_sources(interventions, model, target_len)
+    hooks = _build_hooks(interventions, patch_sources)
 
     try:
         for hook_name, hook_fn in hooks:
             model.add_hook(hook_name, hook_fn)
-        trace = compute_trace(req.prompt, model, top_k=req.top_k)
-        embed_lens = _embedding_layer_lens(trace, model, top_k=req.top_k)
+        trace = compute_trace(prompt, model, top_k=top_k)
+        embed_lens = _embedding_layer_lens(trace, model, top_k=top_k)
     finally:
-        # Always clean up — stale hooks would corrupt the next request.
         model.reset_hooks()
 
     all_lens = [embed_lens, *trace.logit_lens_top_k]
-
     resp = TraceResponse(
         prompt=trace.prompt,
         tokens=trace.tokens,
@@ -318,10 +348,106 @@ def trace_endpoint(req: TraceRequest) -> TraceResponse:
         logit_lens_top_k=[[_wrap_row(row) for row in layer] for layer in all_lens],
         final_top_k=[_wrap_row(row) for row in trace.final_top_k],
         attention_patterns=trace.attention_patterns.tolist(),
-        interventions_applied=list(req.interventions),
+        interventions_applied=list(interventions),
     )
     cache[key] = resp
     return resp
+
+
+@app.post("/trace", response_model=TraceResponse)
+def trace_endpoint(req: TraceRequest) -> TraceResponse:
+    return _compute_trace_response(
+        req.prompt, req.interventions, req.top_k, _state["model"], _state["cache"]
+    )
+
+
+def _resolve_sweep_layers(req: SweepRequest, n_layers: int) -> list[int]:
+    if req.scope == "current_layer":
+        if req.layer is None:
+            raise HTTPException(
+                status_code=400,
+                detail="scope 'current_layer' requires 'layer'",
+            )
+        if req.layer < 0 or req.layer >= n_layers:
+            raise HTTPException(
+                status_code=400,
+                detail=f"layer {req.layer} out of range [0, {n_layers - 1}]",
+            )
+        return [req.layer]
+    if req.scope == "layer_range":
+        if req.layer_start is None or req.layer_end is None:
+            raise HTTPException(
+                status_code=400,
+                detail="scope 'layer_range' requires 'layer_start' and 'layer_end'",
+            )
+        lo = max(0, req.layer_start)
+        hi = min(n_layers - 1, req.layer_end)
+        if lo > hi:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid range [{req.layer_start}, {req.layer_end}]",
+            )
+        return list(range(lo, hi + 1))
+    return list(range(n_layers))
+
+
+@app.post("/sweep", response_model=SweepResponse)
+def sweep_endpoint(req: SweepRequest) -> SweepResponse:
+    model = _state["model"]
+    cache: dict = _state["cache"]
+    n_layers = int(model.cfg.n_layers)
+    n_heads = int(model.cfg.n_heads)
+
+    layers = _resolve_sweep_layers(req, n_layers)
+
+    # Baseline (no sweep intervention, but honors base_interventions).
+    base_resp = _compute_trace_response(
+        req.prompt, list(req.base_interventions), 5, model, cache
+    )
+    last_pos = base_resp.seq_len - 1
+    target_token = (
+        req.target_token
+        if req.target_token is not None
+        else base_resp.final_top_k[last_pos][0].token
+    )
+
+    def prob_of(tok: str, row) -> float:
+        for p in row:
+            if p.token == tok:
+                return float(p.prob)
+        return 0.0
+
+    baseline_prob = prob_of(target_token, base_resp.final_top_k[last_pos])
+
+    results: list[SweepResultItem] = []
+    for layer in layers:
+        for head in range(n_heads):
+            new_iv = ZeroHeadIntervention(type="zero_head", layer=layer, head=head)
+            all_ivs: list = [*req.base_interventions, new_iv]
+            trace_resp = _compute_trace_response(req.prompt, all_ivs, 5, model, cache)
+            ablated_prob = prob_of(target_token, trace_resp.final_top_k[last_pos])
+            results.append(
+                SweepResultItem(
+                    layer=layer,
+                    head=head,
+                    baseline_prob=baseline_prob,
+                    ablated_prob=ablated_prob,
+                    effect=ablated_prob - baseline_prob,
+                )
+            )
+
+    # Ascending: most negative effect (biggest drop) first.
+    results.sort(key=lambda r: r.effect)
+
+    return SweepResponse(
+        prompt=req.prompt,
+        target_token=target_token,
+        target_token_baseline_prob=baseline_prob,
+        n_layers_swept=len(layers),
+        n_heads_per_layer=n_heads,
+        total_ablations=len(results),
+        results=results,
+    )
 
 
 @app.post("/compare", response_model=CompareResponse)

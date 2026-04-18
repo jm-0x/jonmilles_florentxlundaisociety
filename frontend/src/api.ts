@@ -1,4 +1,10 @@
-import type { Comparison, Intervention, Trace } from "./types";
+import type {
+  Comparison,
+  Intervention,
+  SweepRequestBody,
+  SweepResponse,
+  Trace,
+} from "./types";
 
 const BACKEND = "http://localhost:8000";
 
@@ -30,6 +36,25 @@ const _comparisonCache = new Map<string, Comparison>();
 
 export function getCachedComparison(a: string, b: string): Comparison | undefined {
   return _comparisonCache.get(comparisonKey(a, b));
+}
+
+export async function runSweep(body: SweepRequestBody): Promise<SweepResponse> {
+  const res = await fetch(`${BACKEND}/sweep`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const j = (await res.json()) as { detail?: string };
+      if (j.detail) detail = j.detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as SweepResponse;
 }
 
 export async function fetchComparison(a: string, b: string): Promise<Comparison> {

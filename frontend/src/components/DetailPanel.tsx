@@ -1,5 +1,8 @@
 import type {
   PatchHeadIntervention,
+  SweepResultItem,
+  SweepScope,
+  SweepState,
   Trace,
   ZeroHeadIntervention,
 } from "../types";
@@ -18,6 +21,11 @@ type Props = {
   onAblateHead?: (iv: ZeroHeadIntervention) => void;
   onPatchHead?: (iv: PatchHeadIntervention) => void;
   sourceTraces?: SourceTrace[];
+  sweepState?: SweepState;
+  canSweep?: boolean;
+  onRunSweep?: (scope: SweepScope, currentBlockIdx: number | null) => void;
+  onSweepResultClick?: (item: SweepResultItem) => void;
+  onDismissSweep?: () => void;
 };
 
 function TabButton({
@@ -53,6 +61,11 @@ export function DetailPanel({
   onAblateHead,
   onPatchHead,
   sourceTraces,
+  sweepState,
+  canSweep,
+  onRunSweep,
+  onSweepResultClick,
+  onDismissSweep,
 }: Props) {
   const lensPreds =
     trace.logit_lens_top_k[selectedLayerIdx][selectedTokenIdx] ?? [];
@@ -106,6 +119,11 @@ export function DetailPanel({
             onAblateHead={onAblateHead}
             onPatchHead={onPatchHead}
             sourceTraces={sourceTraces}
+            sweepState={sweepState}
+            canSweep={canSweep}
+            onRunSweep={onRunSweep}
+            onSweepResultClick={onSweepResultClick}
+            onDismissSweep={onDismissSweep}
           />
         )}
       </div>

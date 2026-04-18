@@ -2,9 +2,14 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { ResponsiveHeatMap } from "@nivo/heatmap";
 import type {
   PatchHeadIntervention,
+  SweepResultItem,
+  SweepScope,
+  SweepState,
   Trace,
   ZeroHeadIntervention,
 } from "../types";
+import { SweepControl } from "./SweepControl";
+import { SweepResultsPanel } from "./SweepResultsPanel";
 import { displayToken } from "../util";
 import {
   AMBER,
@@ -26,6 +31,12 @@ type Props = {
   onPatchHead?: (iv: PatchHeadIntervention) => void;
   /** Other open traces with matching token length — valid patch sources. */
   sourceTraces?: SourceTrace[];
+  /** Sweep UX — omit to hide the sweep control entirely (e.g. in compare-mode diff). */
+  sweepState?: SweepState;
+  canSweep?: boolean;
+  onRunSweep?: (scope: SweepScope, currentBlockIdx: number | null) => void;
+  onSweepResultClick?: (item: SweepResultItem) => void;
+  onDismissSweep?: () => void;
 };
 
 type HeatDatum = { x: string; y: number };
@@ -475,6 +486,11 @@ export function AttentionTab({
   onAblateHead,
   onPatchHead,
   sourceTraces,
+  sweepState,
+  canSweep = false,
+  onRunSweep,
+  onSweepResultClick,
+  onDismissSweep,
 }: Props) {
   const [openHeadIdx, setOpenHeadIdx] = useState<number | null>(null);
 
@@ -581,12 +597,47 @@ export function AttentionTab({
     );
   }
 
+  const showingResults =
+    sweepState?.results && sweepState.results.length > 0;
+  if (
+    showingResults &&
+    sweepState?.targetToken != null &&
+    sweepState?.baselineProb != null &&
+    onSweepResultClick &&
+    onDismissSweep
+  ) {
+    return (
+      <SweepResultsPanel
+        results={sweepState.results!}
+        targetToken={sweepState.targetToken}
+        baselineProb={sweepState.baselineProb}
+        onRowClick={onSweepResultClick}
+        onDismiss={onDismissSweep}
+      />
+    );
+  }
+
+  const isSweeping = !!sweepState?.isRunning;
+
   return (
     <div className="p-4 overflow-auto">
-      <div className="mb-3">
+      <div className="mb-3 flex items-center gap-6 flex-wrap">
         <MaskBOSToggle checked={maskBOS} onChange={setMaskBOS} />
+        {onRunSweep && (
+          <SweepControl
+            canSweep={canSweep && !isSweeping}
+            isRunning={isSweeping}
+            currentBlockIdx={blockIdx}
+            onRun={(scope) => onRunSweep(scope, blockIdx)}
+          />
+        )}
       </div>
-      <div className="flex flex-wrap gap-12 items-start">
+      <div
+        className={
+          "flex flex-wrap gap-12 items-start transition-opacity " +
+          (isSweeping ? "opacity-40 pointer-events-none" : "")
+        }
+      >
         <section className="flex-shrink-0">
           <div className="text-[10px] uppercase tracking-wider text-neutral-500 mb-2 select-none">
             mean across heads (layer {blockIdx})
