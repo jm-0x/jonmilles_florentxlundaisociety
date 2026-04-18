@@ -1,57 +1,127 @@
 # neural trace
 
-A mechanistic interpretability tool for comparing forward passes across two
-inputs on a small transformer, visualized in a dark, monospace IDA-flavored UI.
-Cross-input comparison is a first-class, interactive default view — no
-scripting per experiment.
+A GDB-style interactive debugger for transformer internals.
 
-Model: `gpt2-medium` (24 layers, 16 heads, 1024 d_model) via TransformerLens.
+## Problem
 
-## Features
+Modern AI systems run on transformer models whose internal reasoning is
+invisible. When these systems fail in unexpected ways — confidently
+producing a wrong answer on an input nobody anticipated — engineers have no
+system to look inside and ask why. Evals and logs tell you that the model
+failed, but nothing more. They're black-box unit tests. They can't surface
+root causes.
 
-- **Single-trace view**: per-layer logit-lens top-5 for any token position,
-  final-layer predictions, per-head attention heatmaps (4×4 grid) plus a
-  mean heatmap with token-labelled axes.
-- **Compare mode** (split view): side-by-side tokens strips with diff
-  highlighting, a KL-divergence layer list between the two traces, split
-  predictions panel, and an attention diff tab with per-head `A − B`
-  heatmaps on a diverging cyan↔amber scale.
-- **Interventions**: click a head cell → popover with:
-  - **Ablate** — zero that head's output (necessity probe).
-  - **Patch** — transplant that head's activations from another open trace of
-    the same token length (sufficiency probe).
-  Results open as a new tab and auto-activate compare mode (original vs
-  intervened). Tab labels show a colored effect magnitude
-  (`[−L15.H7 ↓.13]` / `[L15.H7←Italy ↑.03]`) and a rich hover tooltip with
-  the probability transition.
-- **Mask BOS toggle**: hides the attention-sink spike at position 0 so
-  real per-head structure is visible, rescales colors to the non-BOS range.
-- **Sparkline**: layer-list rows include a small bar of the final-layer
-  top-1 token's probability across layers, so the emergence ("the moment
-  of factual recall") is visible at a glance.
-- **Trace ID is deterministic** on `(prompt, interventions)` — opening the
-  same intervention again just switches tabs instead of re-fetching.
+Mechanistic interpretability is the emerging standard way to do
+root-cause analysis on transformer models. With techniques like activation
+patching, ablation studies, and logit-lens analysis, engineers can reverse
+engineer the internal computations of a trained model. Existing solutions
+require developers to manually investigate, often writing custom
+investigation code in Jupyter notebooks and drawing matplotlib plots. No
+interactive interface exists. There is no persistent analysis and no
+compare-and-iterate workflow, like we are used to from the world of reverse
+engineering and debugging. Neural Trace is built to close this gap,
+bringing a GDB-style interactive debugger to transformer internals.
 
-## Prerequisites
+## Solution
+
+Neural Trace is a web-based debugger for transformer language models. It
+treats a forward pass as a navigable trace. You can pause at any
+(layer, token) pair, inspect internal state, run causal analysis, and
+compare runs side-by-side.
+
+Three capabilities:
+
+**Inspection.** Navigate every layer's state for any prompt. See what the
+model predicts at each layer (logit lens), watch predictions emerge across
+layers, and inspect per-head attention patterns.
+
+**Intervention.** Zero-ablate (zero out) any attention head with one click
+to test whether it's necessary for a behavior. Patch activations from a
+different prompt's forward pass to test sufficiency. Run a sweep across all
+heads in a layer (or range of layers) to find the most critical components
+automatically.
+
+**Comparison.** Run two prompts side-by-side with a shared layer axis.
+KL-divergence bars show where in the network the prompts start disagreeing.
+Attention patterns can be diffed directly to surface heads doing
+input-specific work.
+
+A typical investigation takes minutes instead of hours. Example from the
+demo: asking *"where does GPT-2 medium encode that Paris is the capital of
+France?"*. The tool surfaces that L15.H7 is necessary for the specific
+Paris prediction (ablating it drops Paris probability by 13 points and the
+margin over other French cities disappears), and that the same head is
+*not* what carries the Italy-to-France-prediction signal when patched. A
+real finding reproduced in three clicks.
+
+## Technical approach
+
+Model: `gpt2-medium` via TransformerLens (24 layers, 16 heads per layer,
+1024 d_model).
+
+**Backend** — Python, FastAPI, PyTorch, TransformerLens.
+
+- Single model loaded once at server startup; every request is a forward
+  pass through the same in-memory `HookedTransformer`.
+- `POST /trace`: one prompt → a full `ForwardTrace` with the residual stream
+  at every layer+token, attention patterns per head, per-layer/per-position
+  logit-lens top-k, and the final model top-k. Response keyed-cached on
+  `(prompt, interventions)`.
+- `POST /compare`: two equal-length prompts → per-layer symmetric KL and
+  cosine distance at the final token position.
+- `POST /sweep`: baseline + a (layer, head) grid of single-head ablations
+  over a chosen scope, ranked by effect on a tracked target token. Each
+  ablation populates the trace cache as a side effect, so clicking a sweep
+  result opens the full ablated trace instantly.
+- Interventions are Pydantic-discriminated-union types
+  (`zero_head` / `zero_mlp` / `patch_head`). Each maps to a TransformerLens
+  forward hook registered via `model.add_hook(...)` and always torn down in
+  a `try/finally` — stale hooks can't leak between requests.
+- Patching runs the source prompt's forward pass up-front, extracts
+  `hook_z` for the requested (layer, head), and injects that slice into the
+  target's forward pass at the same site. Source/target must tokenize to
+  equal length; mismatch returns 400.
+
+**Frontend** — Vite + React 19 + TypeScript 6 + Tailwind v4 + Nivo 0.99.
+
+- Dark, monospace, IDA/Ghidra-flavored UI. Information density over
+  whitespace; one consistent accent color.
+- State shape: per-trace view state (selected token, selected layer, detail
+  tab), per-trace sweep state, app-level compare state. Trace IDs are
+  deterministic hashes of `(prompt, sorted-interventions)` so repeating an
+  intervention just switches tabs instead of re-fetching.
+- Heatmaps and bar charts use memoized data. Keystrokes in the prompt input
+  are isolated to the TopBar component so they don't re-render the 17+
+  Nivo charts that make up the attention view.
+- Compare mode is a split view with two token strips, a KL-by-layer bar
+  list, a shared-scale predictions panel, and an attention section with
+  A-only / B-only / diff segmented controls. Diff heatmaps use a diverging
+  cyan↔amber scale.
+- Every intervention auto-activates compare mode (base trace ↔ intervened
+  trace) so the user never has to set up the comparison manually. Tab
+  labels surface the effect magnitude (`[−L15.H7 ↓.13]` / `[L15.H7←Italy ↑.03]`)
+  color-coded by intervention type.
+
+## How to run
+
+### Prerequisites
 
 - **Python 3.11+** and [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
 - **Node 18+** and `npm` (Node 22 is what the project was developed on).
-- **Optional**: NVIDIA GPU with a driver supporting CUDA 12.x. The app runs on
-  CPU just fine — see the CPU-only install below.
+- **Optional**: NVIDIA GPU with a driver supporting CUDA 12.x. The app runs
+  on CPU just fine — see the CPU-only install below.
 
-## Setup
-
-### 1. Clone and enter the project
+### Setup
 
 ```
-git clone <this-repo> hackathon
-cd hackathon
+git clone <this-repo> neural-trace
+cd neural-trace
 ```
 
-### 2. Install backend dependencies
+#### Install backend dependencies
 
-The committed `pyproject.toml` pins the PyTorch CUDA 12.4 wheel index. Pick
-the install path that matches your machine.
+The committed `pyproject.toml` pins the PyTorch CUDA 12.4 wheel index.
+Pick the install path that matches your machine.
 
 **With GPU (NVIDIA + CUDA 12.x driver)** — default, no edits needed:
 
@@ -59,10 +129,9 @@ the install path that matches your machine.
 uv sync
 ```
 
-**CPU-only** — replace the torch index with the CPU wheel build before syncing:
+**CPU-only** — swap the torch index to the CPU wheel build before syncing:
 
 ```
-# one-time: point pyproject at the CPU wheel index instead
 sed -i 's|whl/cu124|whl/cpu|' pyproject.toml
 uv sync
 ```
@@ -70,11 +139,11 @@ uv sync
 (Or edit `pyproject.toml`'s `[[tool.uv.index]]` block by hand to
 `url = "https://download.pytorch.org/whl/cpu"`.)
 
-The CPU wheels are ~200 MB; CUDA wheels are ~2 GB. Either way, `uv sync`
+CPU wheels are ~200 MB; CUDA wheels are ~2 GB. Either way, `uv sync`
 creates `.venv/` and installs `fastapi`, `uvicorn`, `torch`,
-`transformer_lens`, `streamlit`, plus their transitive deps.
+`transformer_lens`, plus transitive deps.
 
-### 3. Install frontend dependencies
+#### Install frontend dependencies
 
 ```
 cd frontend
@@ -82,18 +151,18 @@ npm install
 cd ..
 ```
 
-## Running
+### Running
 
 Backend on `:8000`, frontend on `:5173`. Run each in its own terminal.
 
-### Backend
+**Backend:**
 
 ```
 uv run uvicorn server:app --reload --port 8000
 ```
 
 First startup downloads GPT-2 medium weights (~1.4 GB) to
-`~/.cache/huggingface` — subsequent runs are instant. When ready you'll see
+`~/.cache/huggingface`. When ready you'll see
 `[server] gpt2-medium ready on cuda:0` (or `cpu`). Health check:
 
 ```
@@ -101,7 +170,7 @@ curl http://localhost:8000/health
 # {"status":"ok","model":"gpt2-medium","device":"cuda:0"}   (or "cpu")
 ```
 
-### Frontend
+**Frontend:**
 
 ```
 cd frontend
@@ -113,22 +182,19 @@ Open http://localhost:5173. The default prompt
 
 ### Performance without a GPU
 
-The app is fully functional on CPU — every feature works. Expect one forward
-pass (~1 `/trace` request on `gpt2-medium`) to take roughly **0.5–2 seconds**
-on a modern laptop CPU, versus ~100 ms on a mid-range consumer GPU
-(RTX 3050 Ti). The 25-layer logit-lens and 24×16 attention patterns are all
-computed server-side per request and cached, so interacting with an
-already-loaded trace stays fast regardless of hardware. Only the diagnostic
-sweeps (`find_critical_heads.py`, `test_patching.py` — 144 requests each)
-noticeably slow down on CPU; budget ~5 minutes instead of ~30 seconds.
+Every feature works on CPU. Expect one forward pass to take roughly
+**0.5–2 seconds** on a modern laptop CPU versus ~100 ms on a mid-range
+consumer GPU (RTX 3050 Ti). Already-cached traces stay fast regardless.
+The diagnostic sweep scripts noticeably slow down on CPU — budget minutes
+instead of seconds.
 
 ## Architecture
 
 ```
 .
 ├── server.py              FastAPI app. /trace (+ interventions), /compare,
-│                          /health. Loads the model once at startup, keeps
-│                          hooks clean via try/finally + reset_hooks().
+│                          /sweep, /health. Loads the model once at startup,
+│                          keeps hooks clean via try/finally + reset_hooks().
 ├── trace_core.py          compute_trace(prompt, model) → ForwardTrace:
 │                          residual_stream, attention_patterns, per-layer
 │                          per-position logit-lens top-k, final top-k.
@@ -145,7 +211,7 @@ noticeably slow down on CPU; budget ~5 minutes instead of ~30 seconds.
     ├── src/theme.ts       Colour constants (two-file rollback: here +
     │                      src/index.css @theme block).
     ├── src/nivoTheme.ts   Nivo chart theme, amber ramp, diverging scale.
-    ├── src/api.ts         fetchTrace, fetchComparison (module-level cache).
+    ├── src/api.ts         fetchTrace, fetchComparison, runSweep.
     ├── src/interventions.ts  traceId hash, badge/label formatting,
     │                         magnitude formatter.
     ├── src/components/
@@ -155,19 +221,21 @@ noticeably slow down on CPU; budget ~5 minutes instead of ~30 seconds.
     │  ├── DetailPanel            Single-trace detail (predictions/attention).
     │  ├── PredictionsTab / PredBars   Top-5 bar chart (Nivo).
     │  ├── AttentionTab           Per-head grid + mean heatmap + popover
-    │  │                          (Ablate / Patch), Mask-BOS toggle.
+    │  │                          (Ablate / Patch), Mask-BOS toggle, sweep.
+    │  ├── SweepControl           Scope dropdown + Run Sweep button.
+    │  ├── SweepResultsPanel      Ranked ablation results, sign-colored.
     │  ├── CompareView            Compare mode orchestration.
     │  ├── CompareTokenStrips     Two stacked strips with diff outlines.
     │  ├── CompareLayerList       KL-by-layer bars.
     │  ├── CompareDetailPanel     Split predictions + A/B/diff attention.
     │  └── AttentionDiff          Per-head Δ heatmaps + mean Δ heatmap.
     └── src/App.tsx              Top-level state: traces, viewStates, tabs,
-                                 compare state, traceMetadata (effect).
+                                 compare state, traceMetadata, sweepState.
 ```
 
 ## Diagnostic scripts
 
-Run against a live backend (start it first):
+Run against a live backend:
 
 ```
 uv run python validate_setup.py
@@ -175,39 +243,38 @@ uv run python find_critical_heads.py
 uv run python test_patching.py
 ```
 
-Representative findings (on this project's canonical prompts):
+Representative findings on the canonical France/Italy prompts:
 
 - **Baseline**: `France` → ` Paris` (0.338), `Italy` → ` Rome` (0.305).
 - **Symmetric KL** between the two traces is flat (~0.01) through L14,
-  spikes at L16 (7.35), peaks L20 (13.2). That's the "moment of factual
-  recall."
+  spikes at L16 (7.35), peaks L20 (13.2). That's the moment of factual
+  recall.
 - **Most-damaging ablation**: `L15.H7` crashes Paris 0.338 → 0.209 and
   promotes French cities (Lyon, Nice, Strasbourg, Marseille). No single
   head kills Paris outright — the circuit is distributed.
-- **Most-effective patch**: `L16.H2` surfaces Rome to ~0.026. Single-head
-  patching is too weak to fully flip France → Rome; you'd need multi-head
-  or MLP patches for a clean demo flip.
+- **Most-effective single-head patch**: `L16.H2` surfaces Rome to ~0.026.
+  Single-head patching is too weak to fully flip France → Rome; you'd need
+  multi-head or MLP patches for a clean demo flip.
 
 ## Honest notes
 
 - Single-head patching is a weak intervention for factual recall in
   gpt2-medium. Expect subtle magnitude changes, not dramatic flips. The UI
-  surfaces the magnitude so you can see "this did basically nothing" when
-  that's the truth.
+  surfaces magnitudes so "this did basically nothing" is always visible.
 - The logit-lens sparkline looks up the final-layer top-1 token in each
   earlier layer's top-5 — if it's absent we show `0`. An honest
-  under-approximation at early layers; a full fix would need the backend to
-  return the target token's probability at every layer.
+  under-approximation at early layers; a full fix would need the backend
+  to return the target token's probability at every layer.
 - Frontend typing is isolated to the top-bar's input so heatmaps don't
   re-render on every keystroke.
-- Hooks are always cleaned up in a `try/finally`; the `/trace` endpoint
+- Hooks are always cleaned up in `try/finally`; the `/trace` endpoint
   with no interventions is byte-identical before and after any
   intervention request.
 
 ## Re-theming
 
-Colors are centralized in two places. Edit both and the UI re-skins without
-touching components:
+Colors are centralized in two places. Edit both and the UI re-skins
+without touching components:
 
 - `frontend/src/theme.ts` — TypeScript constants (used by Nivo + inline).
 - `frontend/src/index.css` — `@theme { --color-accent: ...; ... }` block

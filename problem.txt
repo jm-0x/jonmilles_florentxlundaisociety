@@ -1,0 +1,14 @@
+modern AI systems run on transformer models whose 
+internal reasoning is invisible. When these systems fail in 
+unexpected ways, confidently producing a wrong answer on an input
+nobody anticipated, engineers have no system to look inside and ask why.
+Evals and logs tell you that the model failed, but nothing more. They're black box unit
+tests. They can't surface root causes.
+
+Mechanistic interpretability is the emerging standard way to do root-cause analysis
+on transformer models. With techniques like activation patching, ablation studies, logit lens analysis
+engineers can reverse engineer the internal computations of a trained model. Existing solutions require
+developers to manually investigate, often writing custom investigation code in jupyter notebooks and drawing matplotlib plots. 
+No interactive interface exists. There is no persistent analysis and no compare-and-iterate workflow, like we are used
+to from the world of reverse engineering and debugging. Neural Trace is built to close this gap, bringing a GDB-style
+interactive debugger to transformer internals.
